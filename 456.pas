@@ -2,20 +2,19 @@
 begin
   
   writeln('Введите сторону треугольника');
-  write('a, b, c ');
+  writeln('a, b, c ');
   readln(a, b, c);
    if (a+b>c) and (a+c>b) and (b+c>a) then
    begin
-     if (aa+bb=cc) and (aa+cc=bb) and (bb+cc=aa) then
-     writeln('rectangular');
-     else if (aa+bb<cc) and (aa+cc<bb) and (bb+cc<aa) then
-     writeln('obtuse')
-     else
-     writeln('acute');
+   if (a*a+b*b=c*c) and (a*a+c*c=b*b) and (b*b+c*c=a*a) then
+   writeln('rectangular(прямоугольный)')
+   else if (a*a+b*b<c*c) and (a*a+c*c<b*b) and (b*b+c*c<a*a) then
+   writeln('obtuse(тупоугольный)')
+   else
+     writeln('acute(остроугольный)');
      end
-      else
-       writeln('impossible');
-end.
-   end;
+     else
+     writeln('impossible(нет треугольника)');
+   
   end.
   
