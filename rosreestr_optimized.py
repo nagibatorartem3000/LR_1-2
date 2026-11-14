@@ -130,6 +130,7 @@ BIG_PROBE_FROM = 20
 EMPTY_WAIT = 5
 STRICT_SAME_QUARTER = True
 EMPTY_STREAK_LIMIT = 3
+EMPTY_STREAK_DEEP = 9      # лимит пустых проб, когда по дому не найдено НИ одного помещения
 RESULTS_CAP = 100
 
 MISSING_EXTRA = 6
@@ -2671,27 +2672,31 @@ def ui_list_pages(page, house, gis, rec, query, probe=False, max_pages=None,
 
 # ---------- Открытие карточек ----------
 
-def api_process_premise(page, house, gis, rec, kn, label, diag, absent_ok=False):
+def api_process_premise(page, house, gis, rec, kn, label, diag, absent_ok=False,
+                        el=None):
     """Карточка помещения через API. absent_ok: отсутствие номера в ЕГРН
-    для пробы пропущенного номера — норма, а не ошибка."""
+    для пробы пропущенного номера — норма, а не ошибка. el: уже полученный
+    элемент карточки (из childCadNumbers здания) — запрос не повторяется."""
 
-    try:
-        el = fetch_card_api(page, kn)
-    except (RateLimited, CaptchaRequired):
-        raise
-    except (ServerBusy, ConnectionLost, SearchTimeout, UnreadableAnswer) as error:
-        rec["premises"][kn] = {
-            "kn": kn,
-            "label": label,
-            "card_ok": False,
-            "check": f"Ошибка: {str(error)[:120]}",
-            "rights": [],
-            "restrictions": [],
-            "needs_retry": True,
-        }
-        diag["errors"] = diag.get("errors", 0) + 1
-        print(f"   {label}: ошибка — {str(error)[:80]}")
-        return False
+    if el is None:
+        try:
+            el = fetch_card_api(page, kn)
+        except (RateLimited, CaptchaRequired):
+            raise
+        except (ServerBusy, ConnectionLost, SearchTimeout,
+                UnreadableAnswer) as error:
+            rec["premises"][kn] = {
+                "kn": kn,
+                "label": label,
+                "card_ok": False,
+                "check": f"Ошибка: {str(error)[:120]}",
+                "rights": [],
+                "restrictions": [],
+                "needs_retry": True,
+            }
+            diag["errors"] = diag.get("errors", 0) + 1
+            print(f"   {label}: ошибка — {str(error)[:80]}")
+            return False
 
     if el is None:
         if absent_ok:
@@ -2960,6 +2965,7 @@ def process_house(page, house, rec, diag):
 
     building = rec["building"]
     building["verdict"] = building_verdict(building)
+    building.setdefault("status", "ok")
     house["rr_cadastre"] = building.get("kn") or cadastre
 
     # Город из адреса здания в Росреестре — дополнительный допустимый вариант:
@@ -3078,6 +3084,47 @@ def process_house(page, house, rec, diag):
 
     if matched:
         print("   в списке найдено:", summarize(matched.values()))
+
+    # Помещения, перечисленные прямо в карточке здания (childCadNumbers) —
+    # бесплатный источник: один batch-запрос вместо десятков проб.
+    if mode == "api":
+        children = [
+            c for c in (building.get("childCadNumbers") or [])
+            if isinstance(c, str) and re.fullmatch(KN_RE, c)
+            and c not in matched and c not in rec["premises"]
+        ]
+
+        if children:
+            try:
+                child_els = fetch_cards_api(page, children)
+            except (RateLimited, CaptchaRequired):
+                raise
+            except (ServerBusy, ConnectionLost, SearchTimeout,
+                    UnreadableAnswer):
+                child_els = []
+                diag["errors"] = diag.get("errors", 0) + 1
+
+            added = 0
+
+            for el in child_els:
+                kn_c = _s(el.get("cadNumber"))
+                card_c = card_from_api_element(el)
+                label_c = parse_rr_address(card_c.get("address") or "")["label"]
+
+                if not kn_c or not label_c:
+                    continue
+
+                matched.setdefault(kn_c, label_c)
+                all_matched.setdefault(kn_c, label_c)
+                rec["premises"].setdefault(kn_c, {"kn": kn_c, "label": label_c})
+                api_process_premise(
+                    page, house, gis, rec, kn_c, label_c, diag, el=el
+                )
+                save_cache_hook(rec)
+                added += 1
+
+            if added:
+                print(f"   из карточки здания добавлено помещений: {added}")
 
     if listing.get("big"):
         mark_big(rec, flat_count(matched.values()))
@@ -3250,6 +3297,11 @@ def probe_stage_range(page, house, gis, rec, diag, mode, all_matched, kind,
     """Перебор номеров одного вида (пом./ком.), когда список неполный."""
 
     empty_streak = 0
+    probed = []
+
+    # Если по дому не найдено ни одного помещения — подозрение на скрытые
+    # квартиры: не останавливаемся после 3 пустых, пробуем глубже.
+    streak_limit = EMPTY_STREAK_LIMIT if all_matched else EMPTY_STREAK_DEEP
 
     for number in range(start, start + MAX_FLAT_FALLBACK):
         if not unknown and len(all_matched) >= sum_expected:
@@ -3264,6 +3316,7 @@ def probe_stage_range(page, house, gis, rec, diag, mode, all_matched, kind,
             empty_streak = 0
             continue
 
+        probed.append(number)
         found = probe_number(
             page, house, gis, rec, diag, kind, number, all_matched
         )
@@ -3273,10 +3326,10 @@ def probe_stage_range(page, house, gis, rec, diag, mode, all_matched, kind,
         else:
             empty_streak += 1
 
-            if empty_streak >= EMPTY_STREAK_LIMIT:
+            if empty_streak >= streak_limit:
                 print(
-                    f"   {EMPTY_STREAK_LIMIT} пустых выдач подряд "
-                    f"для «{kind}» с {start}, переходим дальше"
+                    f"   {streak_limit} пустых выдач подряд для «{kind}» "
+                    f"(пробы: {probed[-streak_limit:]}), переходим дальше"
                 )
                 break
 

@@ -351,3 +351,42 @@ def test_save_excel_with_string_rights(tmp_path, monkeypatch):
     r.save_excel([house], {house["cadastre"]: rec})
 
     assert (tmp_path / "out.xlsx").exists()
+
+
+def test_building_children_collected_even_if_listing_empty():
+    """Живой прогон [2/397]: адресный поиск видит только здание, но в карточке
+    здания перечислены помещения (childCadNumbers) — они должны попасть в итог."""
+
+    service = FakeRosreestr()
+    service.add_building(f"{Q}:1", ADDR, quarter=Q)
+    service.objects[f"{Q}:1"]["childCadNumbers"] = [f"{Q}:101", f"{Q}:102"]
+
+    for i in (1, 2):
+        service.add_premise(f"{Q}:{100 + i}", f"{ADDR}, кв. {i}", quarter=Q)
+
+    page = FakePage(service)
+    house = make_house(None)
+    rec = {}
+    diag = r.HouseDiag()
+    r.process_house(page, house, rec, diag)
+
+    counts = count_kinds(rec)
+    assert len(counts["кв"]) == 2, sorted(counts["кв"])
+
+
+def test_zero_found_probes_deeper_than_three():
+    """Живой прогон [2/397]: 0 найденных, ожидаемое неизвестно — пробы не
+    останавливаются после 3 пустых, а ищут глубже (кв. 7 найдена)."""
+
+    service = FakeRosreestr()
+    service.add_building(f"{Q}:1", ADDR, quarter=Q)
+    service.add_premise(f"{Q}:107", f"{ADDR}, кв. 7", quarter=Q)
+
+    page = FakePage(service)
+    house = make_house(None)
+    rec = {}
+    diag = r.HouseDiag()
+    r.process_house(page, house, rec, diag)
+
+    counts = count_kinds(rec)
+    assert "7" in counts["кв"], sorted(counts["кв"])
