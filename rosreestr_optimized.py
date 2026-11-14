@@ -450,6 +450,27 @@ def normalize(text):
     return " ".join(str(text).split())
 
 
+def _s(value):
+    """Значение JSON/Excel (может быть числом) -> чистая строка."""
+
+    return str(value).strip() if value is not None else ""
+
+
+def _as_int(value):
+    """25.0 из Excel -> 25; нецелое/текст -> None."""
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+
+    return None
+
+
 def to_tokens(text):
     text = str(text).lower().replace("ё", "е")
     tokens = re.findall(r"[a-zа-я0-9][a-zа-я0-9-]*", text)
@@ -577,6 +598,7 @@ def parse_gis_address(address):
     return {
         "street": street,
         "city": city,
+        "city_variants": [city] if city else [],
         "house": house_key(tail),
         "allowed": allowed,
     }
@@ -661,7 +683,21 @@ def match_level(gis, rr):
         return None, "в адресе ГИС ЖКХ нет улицы"
 
     street_ok = all(t in rr["tokens"] for t in needed_street)
-    city_ok = all(t in rr["tokens"] for t in needed_city) if needed_city else True
+
+    # Город может быть записан разными вариантами (ГИС ЖКХ ошибается городом,
+    # Росреестр пишет полный адрес) — считаем совпадение, если адрес подходит
+    # хотя бы под один известный вариант города.
+    variants = list(gis.get("city_variants") or [])
+
+    if needed_city and (not variants or not any(
+        all(t in rr["tokens"] for t in v) for v in variants
+    )):
+        variants.insert(0, needed_city)
+
+    city_ok = (
+        any(all(t in rr["tokens"] for t in v) for v in variants)
+        if variants else True
+    )
 
     if not street_ok:
         return None, "нет в адресе слов улицы: " + " ".join(
@@ -670,7 +706,8 @@ def match_level(gis, rr):
 
     if not city_ok:
         return None, "нет в адресе слов города: " + " ".join(
-            t for t in needed_city if t not in rr["tokens"]
+            t for t in (variants[0] if variants else needed_city)
+            if t not in rr["tokens"]
         )
 
     extra = rr["head_tokens"] - gis["allowed"] - GENERIC_WORDS
@@ -916,7 +953,7 @@ def _main_character(el, key_words):
         description = (item.get("description") or "").lower()
 
         if all(word in description for word in key_words):
-            return (item.get("value") or "").strip()
+            return _s(item.get("value"))
 
     return ""
 
@@ -940,7 +977,7 @@ def card_from_api_element(el):
     """API-элемент из POST /account-back/on -> запись того же вида, что
     parse_card (UI), плюс api-поля. Никаких выдуманных значений."""
 
-    area = _main_character(el, ("площадь",)) or el.get("area") or ""
+    area = _main_character(el, ("площадь",)) or _s(el.get("area"))
     purpose_code = str(el.get("purpose") or "").strip()
     purpose = purpose_text(purpose_code)
     status = str(el.get("status") or "").strip()
@@ -950,8 +987,8 @@ def card_from_api_element(el):
 
     for item in (el.get("rights") or []):
         rights.append({
-            "kind": (item.get("rightTypeDesc") or "").strip(),
-            "number": (item.get("rightNumber") or "").strip(),
+            "kind": _s(item.get("rightTypeDesc")),
+            "number": _s(item.get("rightNumber")),
             "date": epoch_ms_to_date(item.get("rightRegDate")),
         })
 
@@ -959,8 +996,8 @@ def card_from_api_element(el):
 
     for item in (el.get("encumbrances") or []):
         restrictions.append({
-            "kind": (item.get("typeDesc") or item.get("encumbranceNumber") or "").strip(),
-            "number": (item.get("encumbranceNumber") or "").strip(),
+            "kind": _s(item.get("typeDesc") or item.get("encumbranceNumber")),
+            "number": _s(item.get("encumbranceNumber")),
             "date": epoch_ms_to_date(item.get("startDate")),
         })
 
@@ -975,7 +1012,7 @@ def card_from_api_element(el):
     data = {
         "kind": kind,
         "state": state,
-        "kn": (el.get("cadNumber") or "").strip(),
+        "kn": _s(el.get("cadNumber")),
         "address": readable,
         "area": area,
         "purpose": purpose,
@@ -2138,7 +2175,9 @@ def mark_big(rec, count):
 
 def expected_units(house):
     for value in (house.get("residential"), house.get("apartments")):
-        if isinstance(value, int) and value > 0:
+        value = _as_int(value)
+
+        if value and value > 0:
             return value
 
     return 0
@@ -2214,6 +2253,9 @@ def completeness(house, rec):
         reasons.append(
             "число помещений в ГИС ЖКХ неизвестно, список Росреестра неполный"
         )
+
+    if not found and not rec.get("big"):
+        reasons.append("не найдено ни одного помещения этого дома")
 
     if bad:
         reasons.append(f"не открылись карточки: {bad}")
@@ -2840,8 +2882,7 @@ def process_house(page, house, rec, diag):
 
     if (
         SKIP_BY_GIS_COUNT
-        and isinstance(house["residential"], int)
-        and house["residential"] > MAX_FLATS
+        and (_as_int(house["residential"]) or 0) > MAX_FLATS
     ):
         rec["comment"] = (
             f"Пропущен: по ГИС ЖКХ {house['residential']} жилых помещений "
@@ -2882,6 +2923,22 @@ def process_house(page, house, rec, diag):
     building["verdict"] = building_verdict(building)
     house["rr_cadastre"] = building.get("kn") or cadastre
 
+    # Город из адреса здания в Росреестре — дополнительный допустимый вариант:
+    # адрес в ГИС ЖКХ может быть неверным (чужой город).
+    gis_rr = parse_gis_address(building.get("address") or "")
+
+    if gis_rr:
+        gis = dict(gis)
+        variants = list(gis.get("city_variants") or [])
+
+        if gis_rr.get("city"):
+            variants.append(gis_rr["city"])
+
+        gis["city_variants"] = variants
+        gis["allowed"] = set(gis.get("allowed") or set()) | set(
+            gis_rr.get("allowed") or set()
+        )
+
     if building.get("kn") and cadastre and building["kn"] != cadastre:
         add_comment(
             rec,
@@ -2910,8 +2967,10 @@ def process_house(page, house, rec, diag):
         print("   адрес дома из Росреестра:", house["rr_address"])
 
     expected = sum(
-        value for value in (house["residential"], house.get("nonresidential"))
-        if isinstance(value, int)
+        value for value in (
+            _as_int(house["residential"]), _as_int(house.get("nonresidential")),
+        )
+        if value
     )
 
     if not expected and isinstance(house.get("apartments"), int):
@@ -3041,13 +3100,18 @@ def process_house(page, house, rec, diag):
 
             # пом./ком. по одному, когда число помещений неизвестно
             sum_expected = sum(
-                v for v in (house["residential"], house.get("nonresidential"))
-                if isinstance(v, int)
-            ) or (house["apartments"] if isinstance(house.get("apartments"), int) else 0)
+                v for v in (
+                    _as_int(house["residential"]),
+                    _as_int(house.get("nonresidential")),
+                )
+                if v
+            ) or (_as_int(house.get("apartments")) or 0)
             unknown = not sum_expected
 
             if unknown:
-                incomplete = ALWAYS_PROBE_NEXT or not list_complete
+                incomplete = (
+                    ALWAYS_PROBE_NEXT or not list_complete or not all_matched
+                )
             else:
                 incomplete = len(all_matched) < sum_expected
 
@@ -3436,7 +3500,7 @@ def save_excel(houses, cache):
         gis_count = house["residential"]
         nonres_count = house.get("nonresidential")
         gis_total = sum(
-            v for v in (gis_count, nonres_count) if isinstance(v, int)
+            v for v in (_as_int(gis_count), _as_int(nonres_count)) if v
         )
         comment = rec.get("comment", "")
 

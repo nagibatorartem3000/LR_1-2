@@ -127,3 +127,36 @@ def test_needs_retry_on_error_finish():
 def test_needs_retry_on_premise_failure():
     rec = make_rec([1, 2, 3, 4, 5], bad=1)
     assert r.needs_retry(rec)
+
+
+def test_zero_premises_never_complete_unknown_expected():
+    """Живой прогон [30/397]: 0 помещений, ожидаемое неизвестно — не «полные»."""
+
+    house = make_house(None)
+    rec = make_rec([])
+    rec["list_complete"] = True
+
+    complete, why, _ = r.completeness(house, rec)
+
+    assert not complete
+    assert "не найдено ни одного помещения" in why
+
+
+def test_zero_premises_never_complete_with_expected():
+    house = make_house(5)
+    rec = make_rec([])
+
+    complete, why, missing = r.completeness(house, rec)
+
+    assert not complete
+    assert missing == [1, 2, 3, 4, 5]
+
+
+def test_zero_premises_big_house_still_complete():
+    house = make_house(120)
+    rec = make_rec([])
+    rec["big"] = True
+
+    complete, _, _ = r.completeness(house, rec)
+
+    assert complete

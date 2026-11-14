@@ -97,3 +97,37 @@ def test_match_house_fields_api():
         {"street": "Ленина", "house": "5", "korpus": "1"},
     )
     assert level == "EXACT"
+
+
+def test_city_variants_from_building_address():
+    """Живой прогон [29/397]: город в ГИС ЖКХ неверный — берём город из адреса
+    здания в Росреестре; чужие города по-прежнему отклоняются."""
+
+    gis = r.parse_gis_address("обл Кировская, г Киров, ул Гагарина, д. 23")
+    rr_building = r.parse_gis_address(
+        "Российская Федерация, Кировская область, "
+        "Советский муниципальный район, г. Советск, ул. Гагарина, д. 23"
+    )
+
+    merged = dict(gis)
+    variants = list(gis.get("city_variants") or [])
+    variants.append(rr_building["city"])
+    merged["city_variants"] = variants
+    merged["allowed"] = set(gis["allowed"]) | set(rr_building["allowed"])
+
+    sovetsk_flat = r.parse_rr_address(
+        "Российская Федерация, Кировская область, г. Советск, "
+        "ул. Гагарина, д. 23, кв. 2"
+    )
+    kotel_flat = r.parse_rr_address(
+        "Российская Федерация, Кировская область, г.о. город Котельнич, "
+        "г. Котельнич, ул. Гагарина, д. 25, кв. 4"
+    )
+    kirov_flat = r.parse_rr_address(
+        "Кировская обл, г Киров, ул Гагарина, д. 23, кв. 5"
+    )
+
+    assert r.match_house(gis, sovetsk_flat) is False
+    assert r.match_house(merged, sovetsk_flat) is True
+    assert r.match_house(merged, kirov_flat) is True
+    assert r.match_house(merged, kotel_flat) is False

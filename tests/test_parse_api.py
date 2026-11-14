@@ -148,3 +148,22 @@ def test_fetch_card_api_error_not_absent():
 
     with pytest.raises(r.ServerBusy):
         r.fetch_card_api(page, "43:40:000001:5")
+
+
+def test_card_with_numeric_json_values():
+    """Живой прогон: JSON отдаёт числа (площадь, стоимость) не строками."""
+
+    el = dict(HAR_ELEMENT)
+    el["cadCost"] = 3250000.5
+    el["area"] = 59.9
+    el["mainCharacters"] = [
+        {"description": "Площадь", "value": 1200.5, "unitDescription": "кв.м"},
+    ]
+
+    card = r.card_from_api_element(el)
+
+    assert card["kn"] == "43:40:000298:96"
+    assert card["area"] == "1200.5"
+    assert card["cost"] == "3250000.5"
+    assert card["rights"][0]["number"] == "43:40:000298:96-43/079/2026-2"
+    assert isinstance(card["area"], str) and isinstance(card["cost"], str)

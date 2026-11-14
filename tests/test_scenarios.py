@@ -260,3 +260,55 @@ def test_no_false_complete_anywhere():
     house, rec, diag = run_house(make_service(4), 5)
     complete, _, _ = r.completeness(house, rec)
     assert not complete
+
+
+def test_float_residential_from_excel():
+    """Excel отдаёт числа как float (4.0) — дом не должен считаться «неизвестным»."""
+
+    house, rec, diag = run_house(make_service(4), 4.0)
+    counts = count_kinds(rec)
+
+    assert len(counts["кв"]) == 4
+    assert not rec.get("needs_retry")
+
+    complete, why, _ = r.completeness(house, rec)
+    assert complete, why
+
+
+SOVETSK_BLD = (
+    "Российская Федерация, Кировская область, Советский муниципальный район, "
+    "г. Советск, ул. Гагарина, д. 23"
+)
+
+
+def test_gis_city_wrong_flats_still_found():
+    """Живой прогон [29/397]: ГИС ЖКХ указывает г Киров, дом реально в Советске."""
+
+    service = FakeRosreestr()
+    service.add_building("43:31:010153:446", SOVETSK_BLD, quarter="43:31:010153")
+
+    for i in range(1, 5):
+        service.add_premise(
+            f"43:31:010153:{200 + i}",
+            SOVETSK_BLD + f", кв. {i}",
+            quarter="43:31:010153",
+        )
+
+    page = FakePage(service)
+    house = {
+        "raw": {},
+        "address": "обл Кировская, г Киров, ул Гагарина, д. 23",
+        "cadastre": "43:31:010153:446",
+        "residential": 4,
+        "nonresidential": None,
+        "apartments": None,
+    }
+    rec = {}
+    diag = r.HouseDiag()
+    r.process_house(page, house, rec, diag)
+
+    counts = count_kinds(rec)
+    assert len(counts["кв"]) == 4, sorted(counts["кв"])
+
+    complete, why, _ = r.completeness(house, rec)
+    assert complete, why
