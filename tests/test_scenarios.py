@@ -312,3 +312,42 @@ def test_gis_city_wrong_flats_still_found():
 
     complete, why, _ = r.completeness(house, rec)
     assert complete, why
+
+
+def test_save_excel_with_string_rights(tmp_path, monkeypatch):
+    """Живой прогон: права строкой (формат UI/старого кэша) не роняют Excel."""
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(r, "OUTPUT_FILE", str(tmp_path / "out.xlsx"))
+
+    house = make_house(2)
+    rec = {
+        "building": {
+            "status": "ok", "verdict": "МКД", "kn": "43:40:000001:1",
+            "address": ADDR, "address_match": True,
+        },
+        "premises": {
+            "43:40:000001:101": {
+                "kn": "43:40:000001:101", "label": "кв. 1", "card_ok": True,
+                "state": "Актуально", "area": "50",
+                "rights": "Собственность 43:40:000001:101-1 от 2026-01-01",
+                "restrictions": "", "parse_v": 3,
+            },
+            "43:40:000001:102": {
+                "kn": "43:40:000001:102", "label": "кв. 2", "card_ok": True,
+                "state": "Актуально", "area": "51",
+                "rights": [{"kind": "Собственность", "number": "N-2",
+                            "date": "2026-01-02"}],
+                "restrictions": [], "parse_v": 3,
+            },
+        },
+        "listed_count": 2,
+        "list_complete": True,
+        "rules": r.RULES_VERSION,
+        "done": True,
+        "diag": {},
+    }
+
+    r.save_excel([house], {house["cadastre"]: rec})
+
+    assert (tmp_path / "out.xlsx").exists()

@@ -473,6 +473,34 @@ def _as_int(value):
     return None
 
 
+def rights_items(value):
+    """Права/обременения записи -> список {kind, number, date}.
+
+    Форматы в природе: список словарей (API), строка «вид № от даты»
+    (карточки UI/старый кэш), мусор. Сводим всё к списку словарей.
+    """
+
+    if isinstance(value, str):
+        return [{"kind": value.strip(), "number": "", "date": ""}]
+
+    if not isinstance(value, list):
+        return []
+
+    items = []
+
+    for item in value:
+        if isinstance(item, dict):
+            items.append({
+                "kind": _s(item.get("kind")),
+                "number": _s(item.get("number")),
+                "date": _s(item.get("date")),
+            })
+        elif _s(item):
+            items.append({"kind": _s(item), "number": "", "date": ""})
+
+    return items
+
+
 def to_tokens(text):
     text = str(text).lower().replace("ё", "е")
     tokens = re.findall(r"[a-zа-я0-9][a-zа-я0-9-]*", text)
@@ -3687,8 +3715,8 @@ def save_excel(houses, cache):
         ))
 
         for p in premises:
-            rights = p.get("rights") or []
-            kinds = sorted({r["kind"] for r in rights})
+            rights = rights_items(p.get("rights"))
+            kinds = sorted({r["kind"] for r in rights if r["kind"]})
 
             state = (p.get("state") or "").strip()
             active = (not state) or state.lower() == "актуально"
@@ -3707,13 +3735,15 @@ def save_excel(houses, cache):
                     NO_OWNERSHIP if p.get("card_ok") else None
                 )
                 rights_text = "\n".join(
-                    f"{r['kind']} {r['number']}" for r in rights
+                    " ".join(x for x in (r["kind"], r["number"]) if x)
+                    for r in rights
                 ) or p.get("rights_raw") or (
                     "Права в справке не найдены" if state else None
                 )
                 area_value = p.get("area")
                 restrictions_text = "\n".join(
-                    r["number"] for r in p.get("restrictions") or []
+                    r["number"] for r in rights_items(p.get("restrictions"))
+                    if r["number"]
                 ) or None
                 purpose_value = p.get("purpose")
                 floor_value = p.get("floor")
@@ -4046,7 +4076,15 @@ def run_check():
             save_cache(cache)
 
             if force or time.time() - last_excel["t"] > 45:
-                save_excel(houses, cache)
+                try:
+                    save_excel(houses, cache)
+                except Exception as error:
+                    print(
+                        "   !!! Excel не сохранился"
+                        f" ({str(error)[:120]}) — повторю при следующем"
+                        " сохранении; кэш цел"
+                    )
+
                 last_excel["t"] = time.time()
 
             save_stats()
