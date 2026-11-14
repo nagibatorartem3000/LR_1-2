@@ -51,6 +51,7 @@ import random
 import re
 import sys
 import time
+import traceback
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,6 +125,7 @@ ALWAYS_CHECK_1001 = False
 MAX_FLATS = 30
 SKIP_BY_GIS_COUNT = False
 RULES_VERSION = 6
+BUILD = "2026-11-14.1"
 BIG_PROBE_FROM = 20
 EMPTY_WAIT = 5
 STRICT_SAME_QUARTER = True
@@ -2299,6 +2301,7 @@ def building_from_element(el, gis, cadastre):
 
 def api_find_building(page, house, gis, diag):
     cadastre = house["cadastre"]
+    kn_failed = False
 
     if cadastre and re.fullmatch(KN_RE, cadastre):
         try:
@@ -2306,6 +2309,8 @@ def api_find_building(page, house, gis, diag):
         except (RateLimited, CaptchaRequired):
             raise
         except (ServerBusy, ConnectionLost, SearchTimeout, UnreadableAnswer):
+            kn_failed = True
+            diag["errors"] = diag.get("errors", 0) + 1
             el = None
 
         if el is not None:
@@ -2356,6 +2361,12 @@ def api_find_building(page, house, gis, diag):
     if searches_ok == 0 and searches_failed:
         raise ServerBusy(
             f"поиск здания: сервис недоступен ({searches_failed} сбоев)"
+        )
+
+    if kn_failed:
+        raise ServerBusy(
+            "поиск здания: карточка по кадастровому номеру не прочиталась "
+            "(сбой сервиса) — дом не помечается «не найден»"
         )
 
     return None
@@ -4049,6 +4060,7 @@ def run_check():
             print("\n===================================")
             print("  ПРОВЕРКА В РОСРЕЕСТРЕ")
             print("  Движок:", "API (+ UI-фолбэк)" if engine_mode() == "api" else "UI")
+            print("  Версия правил:", RULES_VERSION, "| сборка:", BUILD)
             print("===================================")
 
             if not search_form_ready(page):
@@ -4164,7 +4176,13 @@ def run_check():
                         rec["comment"] = f"Ошибка: {str(error)[:150]}"
                         rec["done"] = False
                         consecutive_fails += 1
-                        print("   ошибка:", error)
+                        frames = traceback.extract_tb(error.__traceback__)
+                        where = ", ".join(
+                            f"{f.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:{f.lineno}"
+                            for f in frames[-2:]
+                        )
+                        print("   ошибка:", error, f"[{where}]")
+                        traceback.print_exc()
                         save_debug(page, "error")
 
                         if consecutive_fails >= MAX_CONSECUTIVE_FAILS:

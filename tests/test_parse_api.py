@@ -167,3 +167,21 @@ def test_card_with_numeric_json_values():
     assert card["cost"] == "3250000.5"
     assert card["rights"][0]["number"] == "43:40:000298:96-43/079/2026-2"
     assert isinstance(card["area"], str) and isinstance(card["cost"], str)
+
+
+def test_kn_server_error_not_treated_as_not_found():
+    """Сбой карточки по КН не превращает дом в «не найден» — должен быть ServerBusy."""
+
+    service = FakeRosreestr()
+    service.add_building("43:40:000001:1", "Кировская обл, г Киров, ул Ленина, д 5")
+    service.fail_kns.add("43:40:000001:1")
+    page = FakePage(service)
+
+    house = {
+        "address": "обл Кировская, г Киров, ул Ленина, д. 5",
+        "cadastre": "43:40:000001:1",
+    }
+    gis = r.parse_gis_address(house["address"])
+
+    with pytest.raises(r.ServerBusy):
+        r.api_find_building(page, house, gis, r.HouseDiag())
